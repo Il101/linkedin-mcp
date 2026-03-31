@@ -212,12 +212,14 @@ async def handle_health(request):
 
 
 async def handle_oauth_authorize(request):
-    """OAuth 2.0 Authorization endpoint"""
+    """OAuth 2.0 Authorization endpoint with PKCE support"""
     params = dict(request.query_params)
     client_id = params.get("client_id")
     redirect_uri = params.get("redirect_uri")
     response_type = params.get("response_type")
     state = params.get("state", "")
+    code_challenge = params.get("code_challenge")
+    code_challenge_method = params.get("code_challenge_method")
     
     # Validate client_id
     if client_id != OAUTH_CLIENT_ID:
@@ -231,6 +233,8 @@ async def handle_oauth_authorize(request):
     auth_codes[code] = {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
+        "code_challenge": code_challenge,
+        "code_challenge_method": code_challenge_method,
         "expires": time.time() + 600  # 10 minutes
     }
     
@@ -243,24 +247,38 @@ async def handle_oauth_authorize(request):
     return RedirectResponse(redirect_url)
 
 
+def verify_code_challenge(code_verifier: str, code_challenge: str, method: str) -> bool:
+    """Verify PKCE code challenge"""
+    if method == "S256":
+        digest = hashlib.sha256(code_verifier.encode()).digest()
+        computed = secrets.token_urlsafe(0).join(
+            chr(b) for b in digest
+        )
+        # Base64url encode
+        import base64
+        computed = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+        return secrets.compare_digest(computed, code_challenge)
+    elif method == "plain":
+        return secrets.compare_digest(code_verifier, code_challenge)
+    return False
+
+
 async def handle_oauth_token(request):
-    """OAuth 2.0 Token endpoint"""
+    """OAuth 2.0 Token endpoint with PKCE support"""
     # Parse form data
     form = await request.form()
     grant_type = form.get("grant_type")
     code = form.get("code")
     client_id = form.get("client_id")
     client_secret = form.get("client_secret")
+    code_verifier = form.get("code_verifier")
     
     # Validate grant type
     if grant_type != "authorization_code":
         return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
     
-    # Validate client credentials
+    # Validate client_id
     if client_id != OAUTH_CLIENT_ID:
-        return JSONResponse({"error": "invalid_client"}, status_code=401)
-    
-    if OAUTH_CLIENT_SECRET and client_secret != OAUTH_CLIENT_SECRET:
         return JSONResponse({"error": "invalid_client"}, status_code=401)
     
     # Validate authorization code
@@ -270,6 +288,16 @@ async def handle_oauth_token(request):
     
     if code_data["client_id"] != client_id:
         return JSONResponse({"error": "invalid_grant"}, status_code=400)
+    
+    # Verify PKCE if code_challenge was provided during authorization
+    if code_data.get("code_challenge"):
+        if not code_verifier:
+            return JSONResponse({"error": "invalid_grant", "error_description": "code_verifier required"}, status_code=400)
+        if not verify_code_challenge(code_verifier, code_data["code_challenge"], code_data.get("code_challenge_method", "plain")):
+            return JSONResponse({"error": "invalid_grant", "error_description": "code_verifier mismatch"}, status_code=400)
+    elif OAUTH_CLIENT_SECRET and client_secret != OAUTH_CLIENT_SECRET:
+        # If no PKCE, require client_secret
+        return JSONResponse({"error": "invalid_client"}, status_code=401)
     
     # Delete used code
     del auth_codes[code]
@@ -302,7 +330,8 @@ async def handle_oauth_metadata(request):
         "token_endpoint": f"{base_url}/oauth/token",
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code"],
-        "token_endpoint_auth_methods_supported": ["client_secret_post"]
+        "code_challenge_methods_supported": ["S256", "plain"],
+        "token_endpoint_auth_methods_supported": ["none", "client_secret_post"]
     })
 
 
