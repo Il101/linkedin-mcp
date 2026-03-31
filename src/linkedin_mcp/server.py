@@ -180,8 +180,8 @@ async def handle_messages(request):
     if sse_transport is None:
         return Response("No active SSE connection", status_code=400)
     
-    # Forward to SSE transport
-    return await sse_transport.handle_post_message(
+    # Forward to SSE transport - it handles the response itself
+    await sse_transport.handle_post_message(
         request.scope,
         request.receive,
         request._send,
