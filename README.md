@@ -44,7 +44,8 @@ python -m linkedin_mcp.server
 1. Создай новый проект на [Railway](https://railway.app)
 2. Подключи этот репозиторий
 3. Добавь переменные окружения:
-   - `LINKEDIN_ACCESS_TOKEN` — твой токен
+   - `LINKEDIN_ACCESS_TOKEN` — твой токен LinkedIn
+   - `MCP_API_KEY` — секретный ключ для защиты сервера (сгенерируй: `openssl rand -hex 32`)
    - `PORT` — 8000 (Railway добавит автоматически)
 4. Deploy!
 
@@ -72,20 +73,20 @@ python -m linkedin_mcp.server
 
 ### Cursor / Windsurf / Cline (через Railway)
 
-Добавь удаленный MCP сервер:
+Добавь удаленный MCP сервер с авторизацией:
 
 ```
 URL: https://your-app.railway.app/sse
+Headers:
+  Authorization: Bearer YOUR_MCP_API_KEY
 ```
 
 ### Любой MCP клиент (HTTP)
 
 ```bash
-# SSE endpoint
-https://your-app.railway.app/sse
-
-# Messages endpoint  
-https://your-app.railway.app/messages
+# SSE endpoint (требует Authorization header)
+curl -H "Authorization: Bearer YOUR_MCP_API_KEY" \
+  https://your-app.railway.app/sse
 ```
 
 ## LinkedIn API Scopes

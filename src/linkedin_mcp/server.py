@@ -2,6 +2,7 @@
 
 import os
 import asyncio
+import secrets
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.server.sse import SseServerTransport
@@ -14,6 +15,21 @@ from .linkedin import LinkedInClient
 
 
 server = Server("linkedin-mcp")
+
+# API key for authentication (set in environment)
+API_KEY = os.getenv("MCP_API_KEY")
+
+
+def verify_api_key(request) -> bool:
+    """Verify the API key from request headers"""
+    if not API_KEY:
+        return True  # No auth if key not set (local dev)
+    
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        return secrets.compare_digest(token, API_KEY)
+    return False
 
 
 @server.list_prompts()
@@ -147,6 +163,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
 async def handle_sse(request):
     """Handle SSE endpoint for remote connections"""
+    # Check API key
+    if not verify_api_key(request):
+        return Response("Unauthorized", status_code=401)
+    
     transport = SseServerTransport("/messages")
     
     async with transport.connect_sse(
@@ -165,7 +185,14 @@ async def handle_sse(request):
 
 async def handle_messages(request):
     """Handle messages endpoint"""
+    if not verify_api_key(request):
+        return Response("Unauthorized", status_code=401)
     return Response()
+
+
+async def handle_health(request):
+    """Health check endpoint (no auth required)"""
+    return Response("LinkedIn MCP Server is running")
 
 
 # Starlette app for HTTP/SSE mode
@@ -173,7 +200,8 @@ app = Starlette(
     routes=[
         Route("/sse", endpoint=handle_sse),
         Route("/messages", endpoint=handle_messages, methods=["POST"]),
-        Route("/", endpoint=lambda request: Response("LinkedIn MCP Server is running")),
+        Route("/", endpoint=handle_health),
+        Route("/health", endpoint=handle_health),
     ]
 )
 
