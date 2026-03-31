@@ -2,50 +2,21 @@
 
 import os
 import asyncio
-import secrets
-import hashlib
-import time
-import json
-from urllib.parse import urlencode, parse_qs
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.server.sse import SseServerTransport
 from mcp.types import Tool, TextContent, Prompt, PromptMessage
 from starlette.applications import Starlette
-from starlette.routing import Route
-from starlette.responses import Response, RedirectResponse, JSONResponse
+from starlette.routing import Route, Mount
+from starlette.responses import Response
 
 from .linkedin import LinkedInClient
 
 
 server = Server("linkedin-mcp")
 
-# OAuth configuration (set in environment)
-OAUTH_CLIENT_ID = os.getenv("OAUTH_CLIENT_ID", "linkedin-mcp-client")
-OAUTH_CLIENT_SECRET = os.getenv("OAUTH_CLIENT_SECRET")
-
-# Store for authorization codes and tokens (in production use Redis/DB)
-auth_codes = {}  # code -> {client_id, expires}
-access_tokens = {}  # token -> {client_id, expires}
-
-
-def generate_token():
-    """Generate a secure random token"""
-    return secrets.token_urlsafe(32)
-
-
-def verify_token(request) -> bool:
-    """Verify OAuth access token"""
-    if not OAUTH_CLIENT_SECRET:
-        return True  # No auth if not configured
-    
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        token = auth_header[7:]
-        token_data = access_tokens.get(token)
-        if token_data and token_data["expires"] > time.time():
-            return True
-    return False
+# Secret path for SSE endpoint (set in environment)
+SECRET_PATH = os.getenv("MCP_SECRET_PATH", "")
 
 
 @server.list_prompts()
@@ -177,15 +148,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
 
+# SSE transport instance (reused for message routing)
+sse_transport = None
+
+
 async def handle_sse(request):
-    """Handle SSE endpoint for remote connections"""
-    # Check OAuth token
-    if not verify_token(request):
-        return Response("Unauthorized", status_code=401)
+    """Handle SSE endpoint for MCP connections"""
+    global sse_transport
     
-    transport = SseServerTransport("/messages")
+    # Create transport with message path
+    sse_transport = SseServerTransport("/messages")
     
-    async with transport.connect_sse(
+    async with sse_transport.connect_sse(
         request.scope,
         request.receive,
         request._send,
@@ -200,174 +174,49 @@ async def handle_sse(request):
 
 
 async def handle_messages(request):
-    """Handle messages endpoint"""
-    if not verify_token(request):
-        return Response("Unauthorized", status_code=401)
-    return Response()
+    """Handle POST messages from MCP client"""
+    global sse_transport
+    
+    if sse_transport is None:
+        return Response("No active SSE connection", status_code=400)
+    
+    # Forward to SSE transport
+    return await sse_transport.handle_post_message(
+        request.scope,
+        request.receive,
+        request._send,
+    )
 
 
 async def handle_health(request):
-    """Health check endpoint (no auth required)"""
+    """Health check endpoint"""
     return Response("LinkedIn MCP Server is running")
 
 
-async def handle_oauth_authorize(request):
-    """OAuth 2.0 Authorization endpoint with PKCE support"""
-    params = dict(request.query_params)
-    client_id = params.get("client_id")
-    redirect_uri = params.get("redirect_uri")
-    response_type = params.get("response_type")
-    state = params.get("state", "")
-    code_challenge = params.get("code_challenge")
-    code_challenge_method = params.get("code_challenge_method")
-    
-    # Validate client_id
-    if client_id != OAUTH_CLIENT_ID:
-        return Response("Invalid client_id", status_code=400)
-    
-    if response_type != "code":
-        return Response("Only response_type=code is supported", status_code=400)
-    
-    # Generate authorization code
-    code = generate_token()
-    auth_codes[code] = {
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "code_challenge": code_challenge,
-        "code_challenge_method": code_challenge_method,
-        "expires": time.time() + 600  # 10 minutes
-    }
-    
-    # Redirect back with code
-    redirect_params = {"code": code}
-    if state:
-        redirect_params["state"] = state
-    
-    redirect_url = f"{redirect_uri}?{urlencode(redirect_params)}"
-    return RedirectResponse(redirect_url)
-
-
-def verify_code_challenge(code_verifier: str, code_challenge: str, method: str) -> bool:
-    """Verify PKCE code challenge"""
-    if method == "S256":
-        digest = hashlib.sha256(code_verifier.encode()).digest()
-        computed = secrets.token_urlsafe(0).join(
-            chr(b) for b in digest
-        )
-        # Base64url encode
-        import base64
-        computed = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
-        return secrets.compare_digest(computed, code_challenge)
-    elif method == "plain":
-        return secrets.compare_digest(code_verifier, code_challenge)
-    return False
-
-
-async def handle_oauth_token(request):
-    """OAuth 2.0 Token endpoint with PKCE support"""
-    # Parse form data
-    form = await request.form()
-    grant_type = form.get("grant_type")
-    code = form.get("code")
-    client_id = form.get("client_id")
-    client_secret = form.get("client_secret")
-    code_verifier = form.get("code_verifier")
-    
-    # Validate grant type
-    if grant_type != "authorization_code":
-        return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
-    
-    # Validate client_id
-    if client_id != OAUTH_CLIENT_ID:
-        return JSONResponse({"error": "invalid_client"}, status_code=401)
-    
-    # Validate authorization code
-    code_data = auth_codes.get(code)
-    if not code_data or code_data["expires"] < time.time():
-        return JSONResponse({"error": "invalid_grant"}, status_code=400)
-    
-    if code_data["client_id"] != client_id:
-        return JSONResponse({"error": "invalid_grant"}, status_code=400)
-    
-    # Verify PKCE if code_challenge was provided during authorization
-    if code_data.get("code_challenge"):
-        if not code_verifier:
-            return JSONResponse({"error": "invalid_grant", "error_description": "code_verifier required"}, status_code=400)
-        if not verify_code_challenge(code_verifier, code_data["code_challenge"], code_data.get("code_challenge_method", "plain")):
-            return JSONResponse({"error": "invalid_grant", "error_description": "code_verifier mismatch"}, status_code=400)
-    elif OAUTH_CLIENT_SECRET and client_secret != OAUTH_CLIENT_SECRET:
-        # If no PKCE, require client_secret
-        return JSONResponse({"error": "invalid_client"}, status_code=401)
-    
-    # Delete used code
-    del auth_codes[code]
-    
-    # Generate access token
-    access_token = generate_token()
-    expires_in = 86400  # 24 hours
-    access_tokens[access_token] = {
-        "client_id": client_id,
-        "expires": time.time() + expires_in
-    }
-    
-    return JSONResponse({
-        "access_token": access_token,
-        "token_type": "Bearer",
-        "expires_in": expires_in
-    })
-
-
-async def handle_oauth_metadata(request):
-    """OAuth 2.0 Authorization Server Metadata"""
-    # Use HTTPS in production
-    base_url = str(request.base_url).rstrip("/")
-    if os.getenv("RAILWAY_ENVIRONMENT"):
-        base_url = base_url.replace("http://", "https://")
-    
-    return JSONResponse({
-        "issuer": base_url,
-        "authorization_endpoint": f"{base_url}/oauth/authorize",
-        "token_endpoint": f"{base_url}/oauth/token",
-        "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code"],
-        "code_challenge_methods_supported": ["S256", "plain"],
-        "token_endpoint_auth_methods_supported": ["none", "client_secret_post"]
-    })
-
-
-async def handle_protected_resource_metadata(request):
-    """OAuth 2.0 Protected Resource Metadata (RFC 9728)"""
-    base_url = str(request.base_url).rstrip("/")
-    if os.getenv("RAILWAY_ENVIRONMENT"):
-        base_url = base_url.replace("http://", "https://")
-    
-    return JSONResponse({
-        "resource": base_url,
-        "authorization_servers": [base_url],
-        "bearer_methods_supported": ["header"],
-        "scopes_supported": ["claudeai"]
-    })
-
-
-# Starlette app for HTTP/SSE mode
-app = Starlette(
-    routes=[
-        # MCP endpoints
-        Route("/sse", endpoint=handle_sse),
-        Route("/messages", endpoint=handle_messages, methods=["POST"]),
-        
-        # OAuth 2.0 endpoints
-        Route("/oauth/authorize", endpoint=handle_oauth_authorize),
-        Route("/oauth/token", endpoint=handle_oauth_token, methods=["POST"]),
-        Route("/.well-known/oauth-authorization-server", endpoint=handle_oauth_metadata),
-        Route("/.well-known/oauth-protected-resource", endpoint=handle_protected_resource_metadata),
-        Route("/.well-known/oauth-protected-resource/sse", endpoint=handle_protected_resource_metadata),
-        
-        # Health check
+def create_app():
+    """Create the Starlette app with routes"""
+    routes = [
         Route("/", endpoint=handle_health),
         Route("/health", endpoint=handle_health),
     ]
-)
+    
+    # If secret path is set, use it for SSE endpoint
+    if SECRET_PATH:
+        sse_path = f"/sse/{SECRET_PATH}"
+        messages_path = f"/messages/{SECRET_PATH}"
+    else:
+        sse_path = "/sse"
+        messages_path = "/messages"
+    
+    routes.extend([
+        Route(sse_path, endpoint=handle_sse),
+        Route(messages_path, endpoint=handle_messages, methods=["POST"]),
+    ])
+    
+    return Starlette(routes=routes)
+
+
+app = create_app()
 
 
 def main():
@@ -378,6 +227,12 @@ def main():
     if os.getenv("RAILWAY_ENVIRONMENT") or "--http" in sys.argv:
         import uvicorn
         port = int(os.getenv("PORT", 8000))
+        
+        if SECRET_PATH:
+            print(f"🔐 SSE endpoint: /sse/{SECRET_PATH}")
+        else:
+            print("⚠️  No MCP_SECRET_PATH set - endpoint is public at /sse")
+        
         uvicorn.run(app, host="0.0.0.0", port=port)
     else:
         # Run in stdio mode (for local Claude Desktop)
