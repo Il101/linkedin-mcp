@@ -198,20 +198,16 @@ def create_app():
     routes = [
         Route("/", endpoint=handle_health),
         Route("/health", endpoint=handle_health),
+        Route("/messages", endpoint=handle_messages, methods=["POST"]),
     ]
     
     # If secret path is set, use it for SSE endpoint
     if SECRET_PATH:
         sse_path = f"/sse/{SECRET_PATH}"
-        messages_path = f"/messages/{SECRET_PATH}"
     else:
         sse_path = "/sse"
-        messages_path = "/messages"
     
-    routes.extend([
-        Route(sse_path, endpoint=handle_sse),
-        Route(messages_path, endpoint=handle_messages, methods=["POST"]),
-    ])
+    routes.append(Route(sse_path, endpoint=handle_sse))
     
     return Starlette(routes=routes)
 
