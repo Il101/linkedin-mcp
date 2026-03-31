@@ -361,6 +361,7 @@ app = Starlette(
         Route("/oauth/token", endpoint=handle_oauth_token, methods=["POST"]),
         Route("/.well-known/oauth-authorization-server", endpoint=handle_oauth_metadata),
         Route("/.well-known/oauth-protected-resource", endpoint=handle_protected_resource_metadata),
+        Route("/.well-known/oauth-protected-resource/sse", endpoint=handle_protected_resource_metadata),
         
         # Health check
         Route("/", endpoint=handle_health),
