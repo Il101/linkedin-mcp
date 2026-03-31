@@ -335,6 +335,20 @@ async def handle_oauth_metadata(request):
     })
 
 
+async def handle_protected_resource_metadata(request):
+    """OAuth 2.0 Protected Resource Metadata (RFC 9728)"""
+    base_url = str(request.base_url).rstrip("/")
+    if os.getenv("RAILWAY_ENVIRONMENT"):
+        base_url = base_url.replace("http://", "https://")
+    
+    return JSONResponse({
+        "resource": base_url,
+        "authorization_servers": [base_url],
+        "bearer_methods_supported": ["header"],
+        "scopes_supported": ["claudeai"]
+    })
+
+
 # Starlette app for HTTP/SSE mode
 app = Starlette(
     routes=[
@@ -346,6 +360,7 @@ app = Starlette(
         Route("/oauth/authorize", endpoint=handle_oauth_authorize),
         Route("/oauth/token", endpoint=handle_oauth_token, methods=["POST"]),
         Route("/.well-known/oauth-authorization-server", endpoint=handle_oauth_metadata),
+        Route("/.well-known/oauth-protected-resource", endpoint=handle_protected_resource_metadata),
         
         # Health check
         Route("/", endpoint=handle_health),
