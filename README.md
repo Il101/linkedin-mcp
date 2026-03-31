@@ -43,10 +43,16 @@ python -m linkedin_mcp.server
 
 1. Создай новый проект на [Railway](https://railway.app)
 2. Подключи этот репозиторий
-3. Добавь переменную окружения `LINKEDIN_ACCESS_TOKEN`
+3. Добавь переменные окружения:
+   - `LINKEDIN_ACCESS_TOKEN` — твой токен
+   - `PORT` — 8000 (Railway добавит автоматически)
 4. Deploy!
 
-## Использование с Claude Desktop
+После деплоя получишь URL вида: `https://your-app.railway.app`
+
+## Подключение к AI-ассистентам
+
+### Claude Desktop (локально)
 
 Добавь в `claude_desktop_config.json`:
 
@@ -54,7 +60,7 @@ python -m linkedin_mcp.server
 {
   "mcpServers": {
     "linkedin": {
-      "command": "python",
+      "command": "python3",
       "args": ["-m", "linkedin_mcp.server"],
       "env": {
         "LINKEDIN_ACCESS_TOKEN": "your_token"
@@ -64,9 +70,23 @@ python -m linkedin_mcp.server
 }
 ```
 
-## Использование с Cursor
+### Cursor / Windsurf / Cline (через Railway)
 
-Добавь в настройки MCP серверов URL твоего Railway деплоя.
+Добавь удаленный MCP сервер:
+
+```
+URL: https://your-app.railway.app/sse
+```
+
+### Любой MCP клиент (HTTP)
+
+```bash
+# SSE endpoint
+https://your-app.railway.app/sse
+
+# Messages endpoint  
+https://your-app.railway.app/messages
+```
 
 ## LinkedIn API Scopes
 

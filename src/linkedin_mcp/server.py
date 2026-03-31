@@ -4,7 +4,11 @@ import os
 import asyncio
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
+from mcp.server.sse import SseServerTransport
 from mcp.types import Tool, TextContent, Prompt, PromptMessage
+from starlette.applications import Starlette
+from starlette.routing import Route
+from starlette.responses import Response
 
 from .linkedin import LinkedInClient
 
@@ -141,13 +145,55 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
 
+async def handle_sse(request):
+    """Handle SSE endpoint for remote connections"""
+    transport = SseServerTransport("/messages")
+    
+    async with transport.connect_sse(
+        request.scope,
+        request.receive,
+        request._send,
+    ) as (read_stream, write_stream):
+        await server.run(
+            read_stream,
+            write_stream,
+            server.create_initialization_options()
+        )
+    
+    return Response()
+
+
+async def handle_messages(request):
+    """Handle messages endpoint"""
+    return Response()
+
+
+# Starlette app for HTTP/SSE mode
+app = Starlette(
+    routes=[
+        Route("/sse", endpoint=handle_sse),
+        Route("/messages", endpoint=handle_messages, methods=["POST"]),
+        Route("/", endpoint=lambda request: Response("LinkedIn MCP Server is running")),
+    ]
+)
+
+
 def main():
     """Run the MCP server"""
-    asyncio.run(run_server())
+    import sys
+    
+    # Check if running in HTTP mode (for Railway)
+    if os.getenv("RAILWAY_ENVIRONMENT") or "--http" in sys.argv:
+        import uvicorn
+        port = int(os.getenv("PORT", 8000))
+        uvicorn.run(app, host="0.0.0.0", port=port)
+    else:
+        # Run in stdio mode (for local Claude Desktop)
+        asyncio.run(run_stdio_server())
 
 
-async def run_server():
-    """Run the stdio server"""
+async def run_stdio_server():
+    """Run the stdio server for local connections"""
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,
