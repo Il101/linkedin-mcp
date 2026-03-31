@@ -119,3 +119,24 @@ class LinkedInClient:
             )
             response.raise_for_status()
             return {"success": True, "id": response.headers.get("x-restli-id", "unknown")}
+    
+    async def delete_post(self, post_id: str) -> dict:
+        """
+        Delete a LinkedIn post
+        
+        Args:
+            post_id: The post URN (e.g., urn:li:share:123456 or urn:li:ugcPost:123456)
+        
+        Returns:
+            Success status
+        """
+        # URL encode the URN
+        encoded_id = post_id.replace(":", "%3A")
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.delete(
+                f"{self.BASE_URL}/ugcPosts/{encoded_id}",
+                headers=self.headers,
+            )
+            response.raise_for_status()
+            return {"success": True, "deleted_id": post_id}

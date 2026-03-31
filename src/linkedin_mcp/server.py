@@ -101,6 +101,20 @@ async def list_tools() -> list[Tool]:
                 "properties": {}
             }
         ),
+        Tool(
+            name="delete_linkedin_post",
+            description="Delete a LinkedIn post by its ID. You need the post URN from when the post was created.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "post_id": {
+                        "type": "string",
+                        "description": "The post URN (e.g., urn:li:share:7444827823619563520)"
+                    }
+                },
+                "required": ["post_id"]
+            }
+        ),
     ]
 
 
@@ -144,6 +158,21 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             )]
         except Exception as e:
             return [TextContent(type="text", text=f"Error getting profile: {str(e)}")]
+    
+    elif name == "delete_linkedin_post":
+        post_id = arguments.get("post_id", "")
+        
+        if not post_id:
+            return [TextContent(type="text", text="Error: Post ID is required")]
+        
+        try:
+            result = await client.delete_post(post_id)
+            return [TextContent(
+                type="text",
+                text=f"🗑️ Post deleted successfully!\nDeleted ID: {result['deleted_id']}"
+            )]
+        except Exception as e:
+            return [TextContent(type="text", text=f"Error deleting post: {str(e)}")]
     
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
