@@ -291,7 +291,11 @@ async def handle_oauth_token(request):
 
 async def handle_oauth_metadata(request):
     """OAuth 2.0 Authorization Server Metadata"""
+    # Use HTTPS in production
     base_url = str(request.base_url).rstrip("/")
+    if os.getenv("RAILWAY_ENVIRONMENT"):
+        base_url = base_url.replace("http://", "https://")
+    
     return JSONResponse({
         "issuer": base_url,
         "authorization_endpoint": f"{base_url}/oauth/authorize",
