@@ -3,32 +3,48 @@
 import os
 import asyncio
 import secrets
+import hashlib
+import time
+import json
+from urllib.parse import urlencode, parse_qs
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.server.sse import SseServerTransport
 from mcp.types import Tool, TextContent, Prompt, PromptMessage
 from starlette.applications import Starlette
 from starlette.routing import Route
-from starlette.responses import Response
+from starlette.responses import Response, RedirectResponse, JSONResponse
 
 from .linkedin import LinkedInClient
 
 
 server = Server("linkedin-mcp")
 
-# API key for authentication (set in environment)
-API_KEY = os.getenv("MCP_API_KEY")
+# OAuth configuration (set in environment)
+OAUTH_CLIENT_ID = os.getenv("OAUTH_CLIENT_ID", "linkedin-mcp-client")
+OAUTH_CLIENT_SECRET = os.getenv("OAUTH_CLIENT_SECRET")
+
+# Store for authorization codes and tokens (in production use Redis/DB)
+auth_codes = {}  # code -> {client_id, expires}
+access_tokens = {}  # token -> {client_id, expires}
 
 
-def verify_api_key(request) -> bool:
-    """Verify the API key from request headers"""
-    if not API_KEY:
-        return True  # No auth if key not set (local dev)
+def generate_token():
+    """Generate a secure random token"""
+    return secrets.token_urlsafe(32)
+
+
+def verify_token(request) -> bool:
+    """Verify OAuth access token"""
+    if not OAUTH_CLIENT_SECRET:
+        return True  # No auth if not configured
     
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         token = auth_header[7:]
-        return secrets.compare_digest(token, API_KEY)
+        token_data = access_tokens.get(token)
+        if token_data and token_data["expires"] > time.time():
+            return True
     return False
 
 
@@ -163,8 +179,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
 async def handle_sse(request):
     """Handle SSE endpoint for remote connections"""
-    # Check API key
-    if not verify_api_key(request):
+    # Check OAuth token
+    if not verify_token(request):
         return Response("Unauthorized", status_code=401)
     
     transport = SseServerTransport("/messages")
@@ -185,7 +201,7 @@ async def handle_sse(request):
 
 async def handle_messages(request):
     """Handle messages endpoint"""
-    if not verify_api_key(request):
+    if not verify_token(request):
         return Response("Unauthorized", status_code=401)
     return Response()
 
@@ -195,11 +211,110 @@ async def handle_health(request):
     return Response("LinkedIn MCP Server is running")
 
 
+async def handle_oauth_authorize(request):
+    """OAuth 2.0 Authorization endpoint"""
+    params = dict(request.query_params)
+    client_id = params.get("client_id")
+    redirect_uri = params.get("redirect_uri")
+    response_type = params.get("response_type")
+    state = params.get("state", "")
+    
+    # Validate client_id
+    if client_id != OAUTH_CLIENT_ID:
+        return Response("Invalid client_id", status_code=400)
+    
+    if response_type != "code":
+        return Response("Only response_type=code is supported", status_code=400)
+    
+    # Generate authorization code
+    code = generate_token()
+    auth_codes[code] = {
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "expires": time.time() + 600  # 10 minutes
+    }
+    
+    # Redirect back with code
+    redirect_params = {"code": code}
+    if state:
+        redirect_params["state"] = state
+    
+    redirect_url = f"{redirect_uri}?{urlencode(redirect_params)}"
+    return RedirectResponse(redirect_url)
+
+
+async def handle_oauth_token(request):
+    """OAuth 2.0 Token endpoint"""
+    # Parse form data
+    form = await request.form()
+    grant_type = form.get("grant_type")
+    code = form.get("code")
+    client_id = form.get("client_id")
+    client_secret = form.get("client_secret")
+    
+    # Validate grant type
+    if grant_type != "authorization_code":
+        return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
+    
+    # Validate client credentials
+    if client_id != OAUTH_CLIENT_ID:
+        return JSONResponse({"error": "invalid_client"}, status_code=401)
+    
+    if OAUTH_CLIENT_SECRET and client_secret != OAUTH_CLIENT_SECRET:
+        return JSONResponse({"error": "invalid_client"}, status_code=401)
+    
+    # Validate authorization code
+    code_data = auth_codes.get(code)
+    if not code_data or code_data["expires"] < time.time():
+        return JSONResponse({"error": "invalid_grant"}, status_code=400)
+    
+    if code_data["client_id"] != client_id:
+        return JSONResponse({"error": "invalid_grant"}, status_code=400)
+    
+    # Delete used code
+    del auth_codes[code]
+    
+    # Generate access token
+    access_token = generate_token()
+    expires_in = 86400  # 24 hours
+    access_tokens[access_token] = {
+        "client_id": client_id,
+        "expires": time.time() + expires_in
+    }
+    
+    return JSONResponse({
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "expires_in": expires_in
+    })
+
+
+async def handle_oauth_metadata(request):
+    """OAuth 2.0 Authorization Server Metadata"""
+    base_url = str(request.base_url).rstrip("/")
+    return JSONResponse({
+        "issuer": base_url,
+        "authorization_endpoint": f"{base_url}/oauth/authorize",
+        "token_endpoint": f"{base_url}/oauth/token",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code"],
+        "token_endpoint_auth_methods_supported": ["client_secret_post"]
+    })
+
+
 # Starlette app for HTTP/SSE mode
 app = Starlette(
     routes=[
+        # MCP endpoints
         Route("/sse", endpoint=handle_sse),
         Route("/messages", endpoint=handle_messages, methods=["POST"]),
+        
+        # OAuth 2.0 endpoints
+        Route("/oauth/authorize", endpoint=handle_oauth_authorize),
+        Route("/oauth/token", endpoint=handle_oauth_token, methods=["POST"]),
+        Route("/.well-known/oauth-authorization-server", endpoint=handle_oauth_metadata),
+        
+        # Health check
         Route("/", endpoint=handle_health),
         Route("/health", endpoint=handle_health),
     ]
