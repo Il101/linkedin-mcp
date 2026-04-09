@@ -1,61 +1,57 @@
 # LinkedIn MCP Server
 
-MCP сервер для публикации постов в LinkedIn через AI-ассистентов.
+MCP server for publishing LinkedIn posts via AI assistants (Claude, Cursor, Windsurf, Cline).
 
-## Установка
+## What it does
+
+Exposes two MCP tools:
+
+- `post_to_linkedin` — publish a text post (up to 3000 chars, `PUBLIC` or `CONNECTIONS` visibility)
+- `get_linkedin_profile` — retrieve current user profile info
+
+## Setup
+
+### 1. Create LinkedIn App
+
+Go to [LinkedIn Developer Portal](https://www.linkedin.com/developers/apps), create an app, and obtain an Access Token with the following scopes:
+
+- `openid` — to retrieve user ID
+- `w_member_social` — to publish posts
+
+### 2. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 pip install -e .
 ```
 
-## Настройка
-
-1. Создай приложение в [LinkedIn Developer Portal](https://www.linkedin.com/developers/apps)
-2. Получи Access Token с правами `w_member_social` и `openid`
-3. Создай `.env` файл:
+### 3. Configure environment
 
 ```bash
 cp .env.example .env
-# Отредактируй .env и добавь свой токен
+# Edit .env and add your token
 ```
 
-## Локальный запуск
+Your `.env` file should look like:
+
+```bash
+LINKEDIN_ACCESS_TOKEN=your_linkedin_access_token_here
+MCP_SECRET_PATH=your_secret_path_here  # optional, recommended for remote deploy
+PORT=8000
+```
+
+### 4. Run locally
 
 ```bash
 export LINKEDIN_ACCESS_TOKEN="your_token"
 python -m linkedin_mcp.server
 ```
 
-## Инструменты (Tools)
+## Connect to AI Assistants
 
-### `post_to_linkedin`
-Публикует текстовый пост в LinkedIn.
+### Claude Desktop (local)
 
-**Параметры:**
-- `text` (string, required) — текст поста (до 3000 символов)
-- `visibility` (string, optional) — `PUBLIC` или `CONNECTIONS` (по умолчанию `PUBLIC`)
-
-### `get_linkedin_profile`
-Получает информацию о профиле текущего пользователя.
-
-## Деплой на Railway
-
-1. Создай новый проект на [Railway](https://railway.app)
-2. Подключи этот репозиторий
-3. Добавь переменные окружения:
-   - `LINKEDIN_ACCESS_TOKEN` — твой токен LinkedIn
-   - `MCP_API_KEY` — секретный ключ для защиты сервера (сгенерируй: `openssl rand -hex 32`)
-   - `PORT` — 8000 (Railway добавит автоматически)
-4. Deploy!
-
-После деплоя получишь URL вида: `https://your-app.railway.app`
-
-## Подключение к AI-ассистентам
-
-### Claude Desktop (локально)
-
-Добавь в `claude_desktop_config.json`:
+Add to `claude_desktop_config.json`:
 
 ```json
 {
@@ -71,9 +67,9 @@ python -m linkedin_mcp.server
 }
 ```
 
-### Cursor / Windsurf / Cline (через Railway)
+### Cursor / Windsurf / Cline (via Railway)
 
-Добавь удаленный MCP сервер с авторизацией:
+Add a remote MCP server with authorization:
 
 ```
 URL: https://your-app.railway.app/sse
@@ -81,20 +77,30 @@ Headers:
   Authorization: Bearer YOUR_MCP_API_KEY
 ```
 
-### Любой MCP клиент (HTTP)
+### Any MCP client (HTTP)
 
 ```bash
-# SSE endpoint (требует Authorization header)
+# SSE endpoint (requires Authorization header when MCP_SECRET_PATH is set)
 curl -H "Authorization: Bearer YOUR_MCP_API_KEY" \
   https://your-app.railway.app/sse
 ```
 
-## LinkedIn API Scopes
+## Deploy on Railway
 
-Для работы сервера нужны следующие разрешения:
-- `openid` — для получения user ID
-- `w_member_social` — для публикации постов
+1. Create a new project on [Railway](https://railway.app)
+2. Connect this repository
+3. Add environment variables:
+   - `LINKEDIN_ACCESS_TOKEN` — your LinkedIn access token
+   - `MCP_SECRET_PATH` — secret key to protect the server (generate: `openssl rand -hex 32`)
+   - `PORT` — 8000 (Railway sets this automatically)
+4. Deploy!
 
-## Лицензия
+After deployment you will get a URL like: `https://your-app.railway.app`
+
+## Security
+
+The `/sse` endpoint requires an `Authorization: Bearer <MCP_SECRET_PATH>` header when `MCP_SECRET_PATH` is configured. Without it the endpoint is public — suitable for local use only. For any remote deployment, always set `MCP_SECRET_PATH`.
+
+## License
 
 MIT
