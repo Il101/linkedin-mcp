@@ -5,9 +5,9 @@ import asyncio
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.server.sse import SseServerTransport
-from mcp.types import Tool, TextContent, Prompt, PromptMessage
+from mcp.types import Tool, TextContent, Prompt, PromptMessage, GetPromptResult
 from starlette.applications import Starlette
-from starlette.routing import Route, Mount
+from starlette.routing import Route
 from starlette.responses import Response
 
 from .linkedin import LinkedInClient
@@ -17,6 +17,10 @@ server = Server("linkedin-mcp")
 
 # Secret path for SSE endpoint (set in environment)
 SECRET_PATH = os.getenv("MCP_SECRET_PATH", "")
+
+# Single shared transport instance — must not be re-created per request
+# because session IDs are stored on the instance
+sse_transport = SseServerTransport("/messages")
 
 
 @server.list_prompts()
@@ -38,15 +42,18 @@ async def list_prompts() -> list[Prompt]:
 
 
 @server.get_prompt()
-async def get_prompt(name: str, arguments: dict) -> PromptMessage:
+async def get_prompt(name: str, arguments: dict) -> GetPromptResult:
     """Get prompt content"""
     if name == "linkedin_post_creator":
-        topic = arguments.get("topic", "your expertise")
-        return PromptMessage(
-            role="user",
-            content={
-                "type": "text",
-                "text": f"""You are helping create a LinkedIn post about {topic}.
+        topic = arguments.get("topic", "your expertise") if arguments else "your expertise"
+        return GetPromptResult(
+            description="Guide for creating engaging LinkedIn posts",
+            messages=[
+                PromptMessage(
+                    role="user",
+                    content={
+                        "type": "text",
+                        "text": f"""You are helping create a LinkedIn post about {topic}.
 
 Best practices for LinkedIn posts:
 1. Start with a hook - grab attention in the first line
@@ -64,7 +71,9 @@ Post structure:
 - Hashtags
 
 When ready, use the post_to_linkedin tool to publish."""
-            }
+                    }
+                )
+            ]
         )
     raise ValueError(f"Unknown prompt: {name}")
 
@@ -121,31 +130,31 @@ async def list_tools() -> list[Tool]:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Handle tool calls"""
-    
+
     try:
         client = LinkedInClient()
     except ValueError as e:
         return [TextContent(type="text", text=f"Error: {str(e)}")]
-    
+
     if name == "post_to_linkedin":
         text = arguments.get("text", "")
         visibility = arguments.get("visibility", "PUBLIC")
-        
+
         if not text:
             return [TextContent(type="text", text="Error: Post text is required")]
-        
+
         if len(text) > 3000:
             return [TextContent(type="text", text="Error: Post text exceeds 3000 characters")]
-        
+
         try:
             result = await client.create_post(text, visibility)
             return [TextContent(
-                type="text", 
+                type="text",
                 text=f"✅ Post published successfully!\nPost ID: {result['id']}"
             )]
         except Exception as e:
             return [TextContent(type="text", text=f"Error posting to LinkedIn: {str(e)}")]
-    
+
     elif name == "get_linkedin_profile":
         try:
             profile = await client.get_profile()
@@ -158,13 +167,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             )]
         except Exception as e:
             return [TextContent(type="text", text=f"Error getting profile: {str(e)}")]
-    
+
     elif name == "delete_linkedin_post":
         post_id = arguments.get("post_id", "")
-        
+
         if not post_id:
             return [TextContent(type="text", text="Error: Post ID is required")]
-        
+
         try:
             result = await client.delete_post(post_id)
             return [TextContent(
@@ -173,48 +182,35 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             )]
         except Exception as e:
             return [TextContent(type="text", text=f"Error deleting post: {str(e)}")]
-    
+
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
 
-# SSE transport instance (reused for message routing)
-sse_transport = None
+class _SSEHandler:
+    """ASGI handler for SSE connections.
+
+    Must be a class (not a plain function) so Starlette skips the
+    request_response() wrapper and calls it directly as an ASGI app.
+    """
+
+    async def __call__(self, scope, receive, send):
+        async with sse_transport.connect_sse(scope, receive, send) as (read_stream, write_stream):
+            await server.run(
+                read_stream,
+                write_stream,
+                server.create_initialization_options()
+            )
 
 
-async def handle_sse(request):
-    """Handle SSE endpoint for MCP connections"""
-    global sse_transport
-    
-    # Create transport with message path
-    sse_transport = SseServerTransport("/messages")
-    
-    async with sse_transport.connect_sse(
-        request.scope,
-        request.receive,
-        request._send,
-    ) as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            server.create_initialization_options()
-        )
-    
-    return Response()
+class _MessagesHandler:
+    """ASGI handler for POST messages.
 
+    Must be a class (not a plain function) so Starlette skips the
+    request_response() wrapper and calls it directly as an ASGI app.
+    """
 
-async def handle_messages(request):
-    """Handle POST messages from MCP client"""
-    global sse_transport
-    
-    if sse_transport is None:
-        return Response("No active SSE connection", status_code=400)
-    
-    # Forward to SSE transport - it handles the response itself
-    await sse_transport.handle_post_message(
-        request.scope,
-        request.receive,
-        request._send,
-    )
+    async def __call__(self, scope, receive, send):
+        await sse_transport.handle_post_message(scope, receive, send)
 
 
 async def handle_health(request):
@@ -227,17 +223,17 @@ def create_app():
     routes = [
         Route("/", endpoint=handle_health),
         Route("/health", endpoint=handle_health),
-        Route("/messages", endpoint=handle_messages, methods=["POST"]),
+        Route("/messages", endpoint=_MessagesHandler(), methods=["POST"]),
     ]
-    
+
     # If secret path is set, use it for SSE endpoint
     if SECRET_PATH:
         sse_path = f"/sse/{SECRET_PATH}"
     else:
         sse_path = "/sse"
-    
-    routes.append(Route(sse_path, endpoint=handle_sse))
-    
+
+    routes.append(Route(sse_path, endpoint=_SSEHandler(), methods=["GET"]))
+
     return Starlette(routes=routes)
 
 
@@ -247,17 +243,17 @@ app = create_app()
 def main():
     """Run the MCP server"""
     import sys
-    
+
     # Check if running in HTTP mode (for Railway)
     if os.getenv("RAILWAY_ENVIRONMENT") or "--http" in sys.argv:
         import uvicorn
         port = int(os.getenv("PORT", 8000))
-        
+
         if SECRET_PATH:
             print(f"🔐 SSE endpoint: /sse/{SECRET_PATH}")
         else:
             print("⚠️  No MCP_SECRET_PATH set - endpoint is public at /sse")
-        
+
         uvicorn.run(app, host="0.0.0.0", port=port)
     else:
         # Run in stdio mode (for local Claude Desktop)
