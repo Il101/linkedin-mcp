@@ -24,6 +24,12 @@ class LinkedInClient:
             }
         )
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        await self._client.aclose()
+
     async def get_profile(self) -> dict:
         """Get current user's LinkedIn profile"""
         response = await self._client.get(f"{self.BASE_URL}/userinfo")
@@ -65,9 +71,10 @@ class LinkedInClient:
         response = await self._client.post(f"{self.BASE_URL}/ugcPosts", json=payload)
         response.raise_for_status()
 
-        urn = response.headers.get("x-restli-id", "")
-        url = f"https://www.linkedin.com/feed/update/{urn}" if urn else ""
-        return {"id": urn, "url": url}
+        urn = response.headers.get("x-restli-id")
+        if not urn:
+            raise RuntimeError("LinkedIn did not return a post ID in x-restli-id header")
+        return {"id": urn, "url": f"https://www.linkedin.com/feed/update/{urn}"}
 
     async def delete_post(self, post_id: str) -> dict:
         """
