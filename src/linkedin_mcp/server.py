@@ -167,7 +167,7 @@ def main():
         import uvicorn
         port = int(os.getenv("PORT", 8000))
         if _secret:
-            print(f"MCP endpoint: {_mcp_path}")
+            print("MCP endpoint: /mcp/<secret> (path secret configured)")
         else:
             print("WARNING: MCP_SECRET_PATH is not set — /mcp endpoint is public")
         uvicorn.run(mcp.streamable_http_app(), host="0.0.0.0", port=port)
