@@ -1,6 +1,7 @@
 """LinkedIn MCP Server — FastMCP with Streamable HTTP transport"""
 
 import asyncio
+import hmac
 import json
 import os
 
@@ -38,7 +39,7 @@ class BearerAuthMiddleware:
 
         headers = dict(scope.get("headers", []))
         auth = headers.get(b"authorization", b"").decode()
-        if auth == f"Bearer {mcp_api_key}":
+        if hmac.compare_digest(auth, f"Bearer {mcp_api_key}"):
             await self.app(scope, receive, send)
             return
 
@@ -106,11 +107,11 @@ async def post_to_linkedin(
     if visibility not in ("PUBLIC", "CONNECTIONS"):
         raise ValueError("visibility must be PUBLIC or CONNECTIONS")
 
-    async with LinkedInClient() as client:
-        try:
+    try:
+        async with LinkedInClient() as client:
             return await client.create_post(text, visibility)
-        except Exception as e:
-            raise RuntimeError(f"LinkedIn API error while publishing post: {e}") from e
+    except Exception as e:
+        raise RuntimeError(f"LinkedIn API error while publishing post: {e}") from e
 
 
 @mcp.tool(
@@ -123,8 +124,8 @@ async def get_linkedin_profile() -> str:
     Returns name, email, and LinkedIn user ID. Useful for verifying authentication
     before posting.
     """
-    async with LinkedInClient() as client:
-        try:
+    try:
+        async with LinkedInClient() as client:
             profile = await client.get_profile()
             return (
                 f"LinkedIn Profile:\n"
@@ -132,8 +133,8 @@ async def get_linkedin_profile() -> str:
                 f"Email: {profile.get('email', 'N/A')}\n"
                 f"ID: {profile.get('sub', 'N/A')}"
             )
-        except Exception as e:
-            raise RuntimeError(f"LinkedIn API error while fetching profile: {e}") from e
+    except Exception as e:
+        raise RuntimeError(f"LinkedIn API error while fetching profile: {e}") from e
 
 
 @mcp.tool(
@@ -152,12 +153,12 @@ async def delete_linkedin_post(post_id: str) -> str:
     if not post_id.startswith("urn:li:"):
         raise ValueError("post_id must be a LinkedIn URN starting with 'urn:li:'")
 
-    async with LinkedInClient() as client:
-        try:
+    try:
+        async with LinkedInClient() as client:
             result = await client.delete_post(post_id)
             return f"Post deleted successfully. Deleted ID: {result['deleted_id']}"
-        except Exception as e:
-            raise RuntimeError(f"LinkedIn API error while deleting post: {e}") from e
+    except Exception as e:
+        raise RuntimeError(f"LinkedIn API error while deleting post: {e}") from e
 
 
 # ---------------------------------------------------------------------------
