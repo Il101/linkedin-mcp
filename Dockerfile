@@ -10,4 +10,4 @@ RUN pip install --no-cache-dir -e .
 
 EXPOSE 8000
 
-CMD ["python", "-m", "linkedin_mcp.server"]
+CMD ["python", "-m", "linkedin_mcp.server", "--http"]
