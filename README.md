@@ -1,24 +1,32 @@
 # LinkedIn MCP Server
 
-MCP server for publishing LinkedIn posts via AI assistants (Claude, Cursor, Windsurf, Cline).
+MCP server for publishing, inspecting, and deleting LinkedIn posts via AI assistants (Claude, Cursor, Windsurf, Cline).
 
-## What it does
+Uses the **Streamable HTTP** transport (MCP spec 2025-03-26) for remote deployments and **stdio** for local use with Claude Desktop.
 
-Exposes two MCP tools:
+## Tools
 
-- `post_to_linkedin` — publish a text post (up to 3000 chars, `PUBLIC` or `CONNECTIONS` visibility)
-- `get_linkedin_profile` — retrieve current user profile info
+| Tool | What it does | Side effects |
+|---|---|---|
+| `post_to_linkedin` | Publish a text post (up to 3000 chars, PUBLIC or CONNECTIONS visibility) | Writes |
+| `get_linkedin_profile` | Get current user's name, email, and LinkedIn ID | Read-only |
+| `delete_linkedin_post` | Delete a post by URN — **irreversible** | Destructive |
+
+## Prompt
+
+`linkedin_post_creator` — a guided prompt for composing LinkedIn posts. Accepts an optional `topic` argument.
 
 ## Setup
 
-### 1. Create LinkedIn App
+### 1. Create a LinkedIn App
 
-Go to [LinkedIn Developer Portal](https://www.linkedin.com/developers/apps), create an app, and obtain an Access Token with the following scopes:
+Go to the [LinkedIn Developer Portal](https://www.linkedin.com/developers/apps), create an app, and add these OAuth 2.0 scopes:
 
-- `openid` — to retrieve user ID
-- `w_member_social` — to publish posts
+- `openid` — retrieve user ID
+- `profile` — retrieve user name
+- `w_member_social` — publish and delete posts
 
-### 2. Install dependencies
+### 2. Install
 
 ```bash
 pip install -r requirements.txt
@@ -29,27 +37,24 @@ pip install -e .
 
 ```bash
 cp .env.example .env
-# Edit .env and add your token
+# Edit .env — fill in LINKEDIN_ACCESS_TOKEN and MCP_API_KEY
 ```
 
-Your `.env` file should look like:
+### 4. Get a LinkedIn access token
 
 ```bash
-LINKEDIN_ACCESS_TOKEN=your_linkedin_access_token_here
-MCP_SECRET_PATH=your_secret_path_here  # optional, recommended for remote deploy
-PORT=8000
-```
+# Set your OAuth app credentials in the environment first:
+export LINKEDIN_CLIENT_ID="your_client_id"
+export LINKEDIN_CLIENT_SECRET="your_client_secret"
 
-### 4. Run locally
-
-```bash
-export LINKEDIN_ACCESS_TOKEN="your_token"
-python -m linkedin_mcp.server
+python get_token.py
+# Follow the browser prompt — your access token will be printed
+# Note: LinkedIn access tokens expire after ~60 days; rerun this script to renew
 ```
 
 ## Connect to AI Assistants
 
-### Claude Desktop (local)
+### Claude Desktop (stdio — local)
 
 Add to `claude_desktop_config.json`:
 
@@ -57,8 +62,7 @@ Add to `claude_desktop_config.json`:
 {
   "mcpServers": {
     "linkedin": {
-      "command": "python3",
-      "args": ["-m", "linkedin_mcp.server"],
+      "command": "linkedin-mcp",
       "env": {
         "LINKEDIN_ACCESS_TOKEN": "your_token"
       }
@@ -67,39 +71,30 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
-### Cursor / Windsurf / Cline (via Railway)
+### Claude Code / Cursor / Windsurf (remote via Railway)
 
-Add a remote MCP server with authorization:
+Add a remote MCP server:
 
 ```
-URL: https://your-app.railway.app/sse
-Headers:
-  Authorization: Bearer YOUR_MCP_API_KEY
-```
-
-### Any MCP client (HTTP)
-
-```bash
-# SSE endpoint (requires Authorization header when MCP_SECRET_PATH is set)
-curl -H "Authorization: Bearer YOUR_MCP_API_KEY" \
-  https://your-app.railway.app/sse
+URL: https://your-app.railway.app/mcp
+Authorization: Bearer YOUR_MCP_API_KEY
 ```
 
 ## Deploy on Railway
 
-1. Create a new project on [Railway](https://railway.app)
-2. Connect this repository
-3. Add environment variables:
+1. Create a new project on [Railway](https://railway.app) and connect this repository.
+2. Set these environment variables:
    - `LINKEDIN_ACCESS_TOKEN` — your LinkedIn access token
-   - `MCP_SECRET_PATH` — secret key to protect the server (generate: `openssl rand -hex 32`)
-   - `PORT` — 8000 (Railway sets this automatically)
-4. Deploy!
-
-After deployment you will get a URL like: `https://your-app.railway.app`
+   - `MCP_API_KEY` — a secret key protecting the `/mcp` endpoint (`openssl rand -hex 32`)
+   - `PORT` — Railway sets this automatically
+3. Deploy. Your server will be at `https://your-app.railway.app`.
 
 ## Security
 
-The `/sse` endpoint requires an `Authorization: Bearer <MCP_SECRET_PATH>` header when `MCP_SECRET_PATH` is configured. Without it the endpoint is public — suitable for local use only. For any remote deployment, always set `MCP_SECRET_PATH`.
+- All requests to `/mcp` require `Authorization: Bearer <MCP_API_KEY>` when `MCP_API_KEY` is set.
+- `/` and `/health` are public (no token needed).
+- If `MCP_API_KEY` is not set, the server runs without auth — suitable for local use only.
+- Never commit your `.env` file. It is in `.gitignore`.
 
 ## License
 
