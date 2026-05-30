@@ -1,63 +1,180 @@
-"""LinkedIn MCP Server"""
+"""LinkedIn MCP Server — FastMCP with Streamable HTTP transport"""
 
-import os
 import asyncio
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.server.sse import SseServerTransport
-from mcp.types import Tool, TextContent, Prompt, PromptMessage, GetPromptResult
-from starlette.applications import Starlette
-from starlette.routing import Route
-from starlette.responses import Response
+import json
+import os
+
+from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
+from starlette.requests import Request
+from starlette.responses import PlainTextResponse
 
 from .linkedin import LinkedInClient
 
-
-server = Server("linkedin-mcp")
-
-# Secret path for SSE endpoint (set in environment)
-SECRET_PATH = os.getenv("MCP_SECRET_PATH", "")
-
-# Single shared transport instance — must not be re-created per request
-# because session IDs are stored on the instance
-sse_transport = SseServerTransport("/messages")
+# ---------------------------------------------------------------------------
+# Auth middleware (pure ASGI — does NOT buffer response bodies)
+# BaseHTTPMiddleware is intentionally avoided: it buffers the response body
+# and breaks SSE streams used by Streamable HTTP.
+# ---------------------------------------------------------------------------
+OPEN_PATHS = {"/", "/health"}
+MCP_API_KEY = os.getenv("MCP_API_KEY", "")
 
 
-@server.list_prompts()
-async def list_prompts() -> list[Prompt]:
-    """List available prompts for AI assistants"""
-    return [
-        Prompt(
-            name="linkedin_post_creator",
-            description="Guide for creating engaging LinkedIn posts",
-            arguments=[
-                {
-                    "name": "topic",
-                    "description": "The topic or subject of the post",
-                    "required": False
-                }
-            ]
-        ),
-    ]
+class BearerAuthMiddleware:
+    """Pure ASGI middleware that validates Authorization: Bearer tokens."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("path") in OPEN_PATHS:
+            await self.app(scope, receive, send)
+            return
+
+        if not MCP_API_KEY:
+            # No key configured — allow all (local / stdio mode)
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers", []))
+        auth = headers.get(b"authorization", b"").decode()
+        if auth == f"Bearer {MCP_API_KEY}":
+            await self.app(scope, receive, send)
+            return
+
+        # Reject with 401
+        body = json.dumps({"error": "Unauthorized"}).encode()
+        await send({
+            "type": "http.response.start",
+            "status": 401,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode()),
+            ],
+        })
+        await send({"type": "http.response.body", "body": body})
 
 
-@server.get_prompt()
-async def get_prompt(name: str, arguments: dict) -> GetPromptResult:
-    """Get prompt content"""
-    if name == "linkedin_post_creator":
-        topic = arguments.get("topic", "your expertise") if arguments else "your expertise"
-        return GetPromptResult(
-            description="Guide for creating engaging LinkedIn posts",
-            messages=[
-                PromptMessage(
-                    role="user",
-                    content={
-                        "type": "text",
-                        "text": f"""You are helping create a LinkedIn post about {topic}.
+# ---------------------------------------------------------------------------
+# FastMCP app
+# ---------------------------------------------------------------------------
+mcp = FastMCP(
+    "linkedin-mcp",
+    instructions="Publish, inspect, and delete LinkedIn posts on behalf of the authenticated user.",
+)
+
+
+# ---------------------------------------------------------------------------
+# Health routes (registered before streamable_http_app() is called)
+# ---------------------------------------------------------------------------
+@mcp.custom_route("/", methods=["GET"])
+async def index(request: Request) -> PlainTextResponse:
+    return PlainTextResponse("LinkedIn MCP Server is running")
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request: Request) -> PlainTextResponse:
+    return PlainTextResponse("LinkedIn MCP Server is running")
+
+
+# ---------------------------------------------------------------------------
+# Tools
+# ---------------------------------------------------------------------------
+@mcp.tool(
+    title="Publish LinkedIn Post",
+    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False),
+)
+async def post_to_linkedin(
+    text: str,
+    visibility: str = "PUBLIC",
+) -> dict:
+    """Publish a text post to LinkedIn.
+
+    Use this to share professional content, insights, or updates with your network.
+
+    Args:
+        text: Post content (max 3000 characters). Can include emojis, line breaks, hashtags.
+        visibility: PUBLIC (anyone on LinkedIn) or CONNECTIONS (only your connections).
+
+    Returns:
+        dict with 'id' (post URN) and 'url' (full LinkedIn post URL).
+    """
+    if not text:
+        raise ValueError("Post text is required")
+    if len(text) > 3000:
+        raise ValueError(f"Post text is {len(text)} characters; maximum is 3000")
+    if visibility not in ("PUBLIC", "CONNECTIONS"):
+        raise ValueError("visibility must be PUBLIC or CONNECTIONS")
+
+    async with LinkedInClient() as client:
+        try:
+            return await client.create_post(text, visibility)
+        except Exception as e:
+            raise RuntimeError(f"LinkedIn API error while publishing post: {e}") from e
+
+
+@mcp.tool(
+    title="Get LinkedIn Profile",
+    annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False),
+)
+async def get_linkedin_profile() -> str:
+    """Get the current user's LinkedIn profile information.
+
+    Returns name, email, and LinkedIn user ID. Useful for verifying authentication
+    before posting.
+    """
+    async with LinkedInClient() as client:
+        try:
+            profile = await client.get_profile()
+            return (
+                f"LinkedIn Profile:\n"
+                f"Name: {profile.get('name', 'N/A')}\n"
+                f"Email: {profile.get('email', 'N/A')}\n"
+                f"ID: {profile.get('sub', 'N/A')}"
+            )
+        except Exception as e:
+            raise RuntimeError(f"LinkedIn API error while fetching profile: {e}") from e
+
+
+@mcp.tool(
+    title="Delete LinkedIn Post",
+    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True),
+)
+async def delete_linkedin_post(post_id: str) -> str:
+    """Delete a LinkedIn post by its URN. This action is irreversible.
+
+    Args:
+        post_id: The post URN (e.g., urn:li:ugcPost:7444827823619563520).
+                 Obtained from the 'id' field returned by post_to_linkedin.
+    """
+    if not post_id:
+        raise ValueError("post_id is required")
+    if not post_id.startswith("urn:li:"):
+        raise ValueError("post_id must be a LinkedIn URN starting with 'urn:li:'")
+
+    async with LinkedInClient() as client:
+        try:
+            result = await client.delete_post(post_id)
+            return f"Post deleted successfully. Deleted ID: {result['deleted_id']}"
+        except Exception as e:
+            raise RuntimeError(f"LinkedIn API error while deleting post: {e}") from e
+
+
+# ---------------------------------------------------------------------------
+# Prompt
+# ---------------------------------------------------------------------------
+@mcp.prompt()
+def linkedin_post_creator(topic: str = "your expertise") -> str:
+    """Guide for creating engaging LinkedIn posts.
+
+    Args:
+        topic: The topic or subject of the post.
+    """
+    return f"""You are helping create a LinkedIn post about {topic}.
 
 Best practices for LinkedIn posts:
-1. Start with a hook - grab attention in the first line
-2. Keep it concise - 150-300 words is optimal
+1. Start with a hook — grab attention in the first line
+2. Keep it concise — 150-300 words is optimal
 3. Use line breaks for readability
 4. Add relevant emojis sparingly (1-3 per post)
 5. Include a call-to-action if appropriate
@@ -71,207 +188,22 @@ Post structure:
 - Hashtags
 
 When ready, use the post_to_linkedin tool to publish."""
-                    }
-                )
-            ]
-        )
-    raise ValueError(f"Unknown prompt: {name}")
 
 
-@server.list_tools()
-async def list_tools() -> list[Tool]:
-    """List available tools"""
-    return [
-        Tool(
-            name="post_to_linkedin",
-            description="Publish a text post to LinkedIn. Use this to share professional content, insights, or updates with your network.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "text": {
-                        "type": "string",
-                        "description": "The content of the post (max 3000 characters). Can include emojis, line breaks, and hashtags."
-                    },
-                    "visibility": {
-                        "type": "string",
-                        "enum": ["PUBLIC", "CONNECTIONS"],
-                        "default": "PUBLIC",
-                        "description": "Post visibility: PUBLIC (anyone on LinkedIn) or CONNECTIONS (only your connections)"
-                    }
-                },
-                "required": ["text"]
-            }
-        ),
-        Tool(
-            name="get_linkedin_profile",
-            description="Get the current user's LinkedIn profile information (name, email, user ID). Useful for verifying authentication before posting.",
-            inputSchema={
-                "type": "object",
-                "properties": {}
-            }
-        ),
-        Tool(
-            name="delete_linkedin_post",
-            description="Delete a LinkedIn post by its ID. You need the post URN from when the post was created.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "post_id": {
-                        "type": "string",
-                        "description": "The post URN (e.g., urn:li:share:7444827823619563520)"
-                    }
-                },
-                "required": ["post_id"]
-            }
-        ),
-    ]
-
-
-@server.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    """Handle tool calls"""
-
-    try:
-        client = LinkedInClient()
-    except ValueError as e:
-        return [TextContent(type="text", text=f"Error: {str(e)}")]
-
-    if name == "post_to_linkedin":
-        text = arguments.get("text", "")
-        visibility = arguments.get("visibility", "PUBLIC")
-
-        if not text:
-            return [TextContent(type="text", text="Error: Post text is required")]
-
-        if len(text) > 3000:
-            return [TextContent(type="text", text="Error: Post text exceeds 3000 characters")]
-
-        try:
-            result = await client.create_post(text, visibility)
-            return [TextContent(
-                type="text",
-                text=f"✅ Post published successfully!\nPost ID: {result['id']}"
-            )]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error posting to LinkedIn: {str(e)}")]
-
-    elif name == "get_linkedin_profile":
-        try:
-            profile = await client.get_profile()
-            return [TextContent(
-                type="text",
-                text=f"LinkedIn Profile:\n"
-                     f"Name: {profile.get('name', 'N/A')}\n"
-                     f"Email: {profile.get('email', 'N/A')}\n"
-                     f"ID: {profile.get('sub', 'N/A')}"
-            )]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error getting profile: {str(e)}")]
-
-    elif name == "delete_linkedin_post":
-        post_id = arguments.get("post_id", "")
-
-        if not post_id:
-            return [TextContent(type="text", text="Error: Post ID is required")]
-
-        try:
-            result = await client.delete_post(post_id)
-            return [TextContent(
-                type="text",
-                text=f"🗑️ Post deleted successfully!\nDeleted ID: {result['deleted_id']}"
-            )]
-        except Exception as e:
-            return [TextContent(type="text", text=f"Error deleting post: {str(e)}")]
-
-    return [TextContent(type="text", text=f"Unknown tool: {name}")]
-
-
-class _SSEHandler:
-    """ASGI handler for SSE connections.
-
-    Must be a class (not a plain function) so Starlette skips the
-    request_response() wrapper and calls it directly as an ASGI app.
-    """
-
-    async def __call__(self, scope, receive, send):
-        async with sse_transport.connect_sse(scope, receive, send) as (read_stream, write_stream):
-            await server.run(
-                read_stream,
-                write_stream,
-                server.create_initialization_options()
-            )
-
-
-class _MessagesHandler:
-    """ASGI handler for POST messages.
-
-    Must be a class (not a plain function) so Starlette skips the
-    request_response() wrapper and calls it directly as an ASGI app.
-
-    Security: only reachable by clients that hold a valid sessionId UUID,
-    which is issued exclusively through the secret-path SSE endpoint.
-    The transport rejects unknown session IDs automatically.
-    """
-
-    async def __call__(self, scope, receive, send):
-        await sse_transport.handle_post_message(scope, receive, send)
-
-
-async def handle_health(request):
-    """Health check endpoint"""
-    return Response("LinkedIn MCP Server is running")
-
-
-def create_app():
-    """Create the Starlette app with routes"""
-    routes = [
-        Route("/", endpoint=handle_health),
-        Route("/health", endpoint=handle_health),
-        Route("/messages", endpoint=_MessagesHandler(), methods=["POST"]),
-    ]
-
-    # If secret path is set, use it for SSE endpoint
-    if SECRET_PATH:
-        sse_path = f"/sse/{SECRET_PATH}"
-    else:
-        sse_path = "/sse"
-
-    routes.append(Route(sse_path, endpoint=_SSEHandler(), methods=["GET"]))
-
-    return Starlette(routes=routes)
-
-
-app = create_app()
-
-
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 def main():
-    """Run the MCP server"""
     import sys
-
-    # Check if running in HTTP mode (for Railway)
     if os.getenv("RAILWAY_ENVIRONMENT") or "--http" in sys.argv:
         import uvicorn
+        if not MCP_API_KEY:
+            print("WARNING: MCP_API_KEY is not set — the /mcp endpoint is public")
         port = int(os.getenv("PORT", 8000))
-
-        if SECRET_PATH:
-            print(f"🔐 SSE endpoint: /sse/{SECRET_PATH}")
-        else:
-            print("⚠️  No MCP_SECRET_PATH set - endpoint is public at /sse")
-
+        app = BearerAuthMiddleware(mcp.streamable_http_app())
         uvicorn.run(app, host="0.0.0.0", port=port)
     else:
-        # Run in stdio mode (for local Claude Desktop)
-        asyncio.run(run_stdio_server())
-
-
-async def run_stdio_server():
-    """Run the stdio server for local connections"""
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            server.create_initialization_options()
-        )
+        asyncio.run(mcp.run_stdio_async())
 
 
 if __name__ == "__main__":
