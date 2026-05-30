@@ -21,16 +21,23 @@ README.md         — rewritten for new transport and auth model
 **Transport:** Streamable HTTP via `FastMCP`. Single endpoint `/mcp`. Clients POST requests and receive SSE streams in response. No separate `/sse` + `/messages` split. Stdio mode retained for Claude Desktop.
 
 **Launch logic:**
-- `RAILWAY_ENVIRONMENT` set or `--http` flag → uvicorn + Starlette ASGI app
-- otherwise → stdio (`asyncio.run(mcp.run_stdio_async())`)
+- `RAILWAY_ENVIRONMENT` set or `--http` flag → `app = mcp.streamable_http_app()`, wrap in auth ASGI middleware, run with `uvicorn.run(app, host, port)`
+- otherwise → stdio via `asyncio.run(mcp.run_stdio_async())`
+- health routes registered with `@mcp.custom_route("/", ...)` and `@mcp.custom_route("/health", ...)` so they exist on the HTTP app
+- `streamable_http_path` stays at default `/mcp`; `stateless_http` left default (stateful sessions)
 
 ## Authentication
 
-Starlette `BaseHTTPMiddleware` checks `Authorization: Bearer <MCP_API_KEY>` on every request.
+A **pure ASGI middleware** (not `BaseHTTPMiddleware`) checks `Authorization: Bearer <MCP_API_KEY>` on every HTTP request before passing to the app.
 
-- `/` and `/health` — open (no token required)
+> Rationale: Streamable HTTP returns responses as SSE streams. `BaseHTTPMiddleware` buffers response bodies and is known to break streaming responses in Starlette. A thin ASGI middleware inspects `scope["headers"]` and either forwards to the app or sends a `401` directly — it never touches the response stream.
+
+- `/` and `/health` — open (no token required), registered via `@mcp.custom_route`
 - all other paths — require valid Bearer token, return `401 {"error": "Unauthorized"}` otherwise
 - `MCP_API_KEY` env var; if not set, auth is skipped (local/stdio use only, warning printed on startup)
+- non-HTTP scopes (`lifespan`, `websocket`) pass through untouched
+
+FastMCP's built-in `token_verifier`/`auth` is OAuth-2.0-Resource-Server oriented (validates tokens against an authorization server) — overkill for a single shared key, so we use the custom ASGI middleware instead.
 
 ## Environment Variables
 
