@@ -1,8 +1,6 @@
 """LinkedIn MCP Server — FastMCP with Streamable HTTP transport"""
 
 import asyncio
-import hmac
-import json
 import os
 
 from mcp.server.fastmcp import FastMCP
@@ -13,47 +11,13 @@ from starlette.responses import PlainTextResponse
 from .linkedin import LinkedInClient
 
 # ---------------------------------------------------------------------------
-# Auth middleware (pure ASGI — does NOT buffer response bodies)
-# BaseHTTPMiddleware is intentionally avoided: it buffers the response body
-# and breaks SSE streams used by Streamable HTTP.
+# Secret path — security through URL obscurity.
+# MCP_SECRET_PATH env var makes the endpoint /mcp/{secret} instead of /mcp,
+# so the URL itself is the credential — compatible with claude.ai connectors
+# which cannot set custom Authorization headers.
 # ---------------------------------------------------------------------------
-OPEN_PATHS = {"/", "/health"}
-
-
-class BearerAuthMiddleware:
-    """Pure ASGI middleware that validates Authorization: Bearer tokens."""
-
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope.get("path") in OPEN_PATHS:
-            await self.app(scope, receive, send)
-            return
-
-        mcp_api_key = os.getenv("MCP_API_KEY", "")
-        if not mcp_api_key:
-            # No key configured — allow all (local / stdio mode)
-            await self.app(scope, receive, send)
-            return
-
-        headers = dict(scope.get("headers", []))
-        auth = headers.get(b"authorization", b"").decode()
-        if hmac.compare_digest(auth, f"Bearer {mcp_api_key}"):
-            await self.app(scope, receive, send)
-            return
-
-        # Reject with 401
-        body = json.dumps({"error": "Unauthorized"}).encode()
-        await send({
-            "type": "http.response.start",
-            "status": 401,
-            "headers": [
-                (b"content-type", b"application/json"),
-                (b"content-length", str(len(body)).encode()),
-            ],
-        })
-        await send({"type": "http.response.body", "body": body, "more_body": False})
+_secret = os.getenv("MCP_SECRET_PATH", "")
+_mcp_path = f"/mcp/{_secret}" if _secret else "/mcp"
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +26,7 @@ class BearerAuthMiddleware:
 mcp = FastMCP(
     "linkedin-mcp",
     instructions="Publish, inspect, and delete LinkedIn posts on behalf of the authenticated user.",
+    streamable_http_path=_mcp_path,
 )
 
 
@@ -198,11 +163,12 @@ def main():
     import sys
     if os.getenv("RAILWAY_ENVIRONMENT") or "--http" in sys.argv:
         import uvicorn
-        if not os.getenv("MCP_API_KEY"):
-            print("WARNING: MCP_API_KEY is not set — the /mcp endpoint is public")
         port = int(os.getenv("PORT", 8000))
-        app = BearerAuthMiddleware(mcp.streamable_http_app())
-        uvicorn.run(app, host="0.0.0.0", port=port)
+        if _secret:
+            print(f"MCP endpoint: {_mcp_path}")
+        else:
+            print("WARNING: MCP_SECRET_PATH is not set — /mcp endpoint is public")
+        uvicorn.run(mcp.streamable_http_app(), host="0.0.0.0", port=port)
     else:
         asyncio.run(mcp.run_stdio_async())
 
