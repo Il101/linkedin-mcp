@@ -17,7 +17,6 @@ from .linkedin import LinkedInClient
 # and breaks SSE streams used by Streamable HTTP.
 # ---------------------------------------------------------------------------
 OPEN_PATHS = {"/", "/health"}
-MCP_API_KEY = os.getenv("MCP_API_KEY", "")
 
 
 class BearerAuthMiddleware:
@@ -31,14 +30,15 @@ class BearerAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        if not MCP_API_KEY:
+        mcp_api_key = os.getenv("MCP_API_KEY", "")
+        if not mcp_api_key:
             # No key configured — allow all (local / stdio mode)
             await self.app(scope, receive, send)
             return
 
         headers = dict(scope.get("headers", []))
         auth = headers.get(b"authorization", b"").decode()
-        if auth == f"Bearer {MCP_API_KEY}":
+        if auth == f"Bearer {mcp_api_key}":
             await self.app(scope, receive, send)
             return
 
@@ -52,7 +52,7 @@ class BearerAuthMiddleware:
                 (b"content-length", str(len(body)).encode()),
             ],
         })
-        await send({"type": "http.response.body", "body": body})
+        await send({"type": "http.response.body", "body": body, "more_body": False})
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +164,7 @@ async def delete_linkedin_post(post_id: str) -> str:
 # Prompt
 # ---------------------------------------------------------------------------
 @mcp.prompt()
-def linkedin_post_creator(topic: str = "your expertise") -> str:
+async def linkedin_post_creator(topic: str = "your expertise") -> str:
     """Guide for creating engaging LinkedIn posts.
 
     Args:
@@ -197,7 +197,7 @@ def main():
     import sys
     if os.getenv("RAILWAY_ENVIRONMENT") or "--http" in sys.argv:
         import uvicorn
-        if not MCP_API_KEY:
+        if not os.getenv("MCP_API_KEY"):
             print("WARNING: MCP_API_KEY is not set — the /mcp endpoint is public")
         port = int(os.getenv("PORT", 8000))
         app = BearerAuthMiddleware(mcp.streamable_http_app())
