@@ -78,48 +78,6 @@ class LinkedInClient:
             response.raise_for_status()
             return {"success": True, "id": response.headers.get("x-restli-id", "unknown")}
     
-    async def create_post_v2(
-        self,
-        text: str,
-        visibility: str = "PUBLIC",
-    ) -> dict:
-        """
-        Create a post using the newer Posts API
-        
-        Args:
-            text: The post content  
-            visibility: PUBLIC, CONNECTIONS, or LOGGED_IN
-        
-        Returns:
-            Response from LinkedIn API
-        """
-        user_urn = await self.get_user_urn()
-        
-        payload = {
-            "author": user_urn,
-            "commentary": text,
-            "visibility": visibility,
-            "distribution": {
-                "feedDistribution": "MAIN_FEED",
-                "targetEntities": [],
-                "thirdPartyDistributionChannels": []
-            },
-            "lifecycleState": "PUBLISHED",
-            "isReshareDisabledByAuthor": False
-        }
-        
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://api.linkedin.com/rest/posts",
-                headers={
-                    **self.headers,
-                    "LinkedIn-Version": "202401"
-                },
-                json=payload,
-            )
-            response.raise_for_status()
-            return {"success": True, "id": response.headers.get("x-restli-id", "unknown")}
-    
     async def delete_post(self, post_id: str) -> dict:
         """
         Delete a LinkedIn post

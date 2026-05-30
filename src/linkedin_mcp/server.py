@@ -207,6 +207,10 @@ class _MessagesHandler:
 
     Must be a class (not a plain function) so Starlette skips the
     request_response() wrapper and calls it directly as an ASGI app.
+
+    Security: only reachable by clients that hold a valid sessionId UUID,
+    which is issued exclusively through the secret-path SSE endpoint.
+    The transport rejects unknown session IDs automatically.
     """
 
     async def __call__(self, scope, receive, send):
