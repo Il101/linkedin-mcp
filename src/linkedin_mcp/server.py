@@ -28,6 +28,7 @@ mcp = FastMCP(
     instructions="Publish, inspect, and delete LinkedIn posts on behalf of the authenticated user.",
     streamable_http_path=_mcp_path,
     host="0.0.0.0",
+    stateless_http=True,
 )
 
 
