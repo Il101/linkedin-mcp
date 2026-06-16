@@ -1,5 +1,9 @@
 # LinkedIn MCP Server
 
+[![CI](https://github.com/Il101/linkedin-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Il101/linkedin-mcp/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+
 MCP server for publishing, inspecting, and deleting LinkedIn posts via AI assistants (Claude, Cursor, Windsurf, Cline).
 
 Uses the **Streamable HTTP** transport (MCP spec 2025-03-26) for remote deployments and **stdio** for local use with Claude Desktop.
@@ -108,6 +112,19 @@ No custom headers are required — the secret is embedded in the URL itself, whi
 - Always serve remote deployments over HTTPS (Railway does this by default).
 - Never commit your `.env` file. It is in `.gitignore`.
 
+## Development
+
+Install with dev dependencies and run the test suite:
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
+Tests stub the LinkedIn API with `httpx.MockTransport`, so they run offline and
+require no credentials. CI runs them on Python 3.10–3.12 via GitHub Actions.
+
 ## License
 
 MIT
+
