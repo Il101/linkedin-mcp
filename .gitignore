@@ -32,6 +32,13 @@ venv/
 .vscode/
 .idea/
 
-# Local dev scripts (contain secrets or are debug-only)
-get_token.py
+# Local dev/debug scripts
 test_mount.py
+
+# Internal design/planning docs — not part of the published project
+docs/
+
+# Test/coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
