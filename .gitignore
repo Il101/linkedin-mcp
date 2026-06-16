@@ -32,6 +32,5 @@ venv/
 .vscode/
 .idea/
 
-# Local dev scripts (contain secrets or are debug-only)
-get_token.py
+# Local dev/debug scripts
 test_mount.py

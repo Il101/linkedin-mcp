@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
@@ -50,11 +51,16 @@ async def health(request: Request) -> PlainTextResponse:
 # ---------------------------------------------------------------------------
 @mcp.tool(
     title="Publish LinkedIn Post",
-    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=False),
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
 )
 async def post_to_linkedin(
     text: str,
-    visibility: str = "PUBLIC",
+    visibility: Literal["PUBLIC", "CONNECTIONS"] = "PUBLIC",
 ) -> dict:
     """Publish a text post to LinkedIn.
 
@@ -83,7 +89,12 @@ async def post_to_linkedin(
 
 @mcp.tool(
     title="Get LinkedIn Profile",
-    annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False),
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
 )
 async def get_linkedin_profile() -> str:
     """Get the current user's LinkedIn profile information.
@@ -106,7 +117,12 @@ async def get_linkedin_profile() -> str:
 
 @mcp.tool(
     title="Delete LinkedIn Post",
-    annotations=ToolAnnotations(readOnlyHint=False, destructiveHint=True),
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
 )
 async def delete_linkedin_post(post_id: str) -> str:
     """Delete a LinkedIn post by its URN. This action is irreversible.
